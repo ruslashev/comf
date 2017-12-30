@@ -2,4 +2,5 @@ comfd
 comf
 *.o
 .objs
+secretz.hh
 
