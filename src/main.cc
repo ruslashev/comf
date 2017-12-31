@@ -1,38 +1,18 @@
-#include "common.hh"
+#include <cstdio>
+#include <cmath>
+#include <iostream>
+#include <uWS/uWS.h>
+#include <openssl/hmac.h>
+#include "../thirdparty/json.hpp"
 #include "secretz.hh"
 #include "money.hh"
-#include "rest.hh"
-#include <uWS/uWS.h>
 
+using json = nlohmann::json;
 using namespace std;
 
 #define die(...) do { printf(__VA_ARGS__); puts(""); exit(1); } while (0)
 
-bool verbose = true;
-
-void balance() {
-  json j = rest("trading/balance");
-  for (auto &e : j) {
-    money_t avail = num(e["available"]);
-    if (feq(avail, 0.))
-      continue;
-    cout << e["currency"].get<string>() << " " << avail << endl;
-  }
-}
-
-map<string, pair<string, string>> symbols;
-
-void load_pair_symbols() {
-  json j = rest_public("symbol");
-  for (auto &e : j)
-    symbols[e["id"]] = pair<string, string>(e["baseCurrency"],
-        e["quoteCurrency"]);
-
-  if (verbose)
-    for (auto it = symbols.begin(); it != symbols.end(); ++it)
-      cout << it->first << " => (" << it->second.first << "," <<
-        it->second.second << ")\n";
-}
+// map<string, pair<string, string>> symbols;
 
 void explain_error(long err) {
   string text = "Client emitted error on ";
@@ -51,27 +31,113 @@ void explain_error(long err) {
         die("%d errors emitted for one connection!", protocol_error_count);
       break;
     default:
-      die("%d should not emit error!", err);
+      die("%d should not emit error!", (int)err);
+  }
+}
+
+json auth() {
+  char nonce[] = ":LWE%daF;XDweLIE135";
+  unsigned char *signed_nonce = HMAC(EVP_sha256(), apisecret, strlen(apisecret),
+      (unsigned char*)nonce, strlen(nonce), nullptr, nullptr);
+  char signature[65];
+  for (int i = 0; i < 32; ++i)
+    sprintf(&signature[i * 2], "%02x", (unsigned int)signed_nonce[i]);
+  json j = {
+    { "method", "login" },
+    { "params",
+      {
+        { "algo", "HS256" },
+        { "pKey", apikey },
+        { "nonce", nonce },
+        { "signature", signature }
+      }
+    }
+  };
+  return j;
+}
+
+json get_trading_balance() {
+  json j = {
+    { "method", "getTradingBalance" },
+    { "params", {} },
+    { "id", 420 }
+  };
+  return j;
+}
+
+enum class state_k {
+  unconnected,
+  connected,
+  awaiting_auth_response,
+  awaiting_balance_response,
+  ready
+};
+const char* state_to_str(state_k state) {
+  switch (state) {
+    case state_k::unconnected: return "unconnected";
+    case state_k::connected: return "connected";
+    case state_k::awaiting_auth_response: return "awaiting_auth_response";
+    case state_k::awaiting_balance_response: return "awaiting_balance_response";
+    case state_k::ready: return "ready";
+    default: return "unknown state";
   }
 }
 
 void start_loop() {
   const string url = "wss://api.hitbtc.com/api/2/ws";
   uWS::Hub h;
+  state_k state = state_k::unconnected;
+  static bool first_time = true;
 
   h.onError([](void *user) {
     explain_error((long)user);
   });
 
-  h.onConnection([&h](uWS::WebSocket<uWS::CLIENT> *ws, uWS::HttpRequest req) {
-    printf("connect\n");
-    printf("can send\n");
-    h.getDefaultGroup<uWS::CLIENT>().close();
+  h.onConnection([&h, &state](uWS::WebSocket<uWS::CLIENT> *ws, uWS::HttpRequest) {
+    puts("connect");
+    state = state_k::connected;
+    if (first_time) {
+      string txmsg = auth().dump();
+      printf("connected, sending auth... %s\n", txmsg.c_str());
+      ws->send(txmsg.c_str(), txmsg.length(), uWS::OpCode::TEXT);
+      state = state_k::awaiting_auth_response;
+    }
   });
 
-  h.onDisconnection([](uWS::WebSocket<uWS::CLIENT> *ws, int code, char *message,
+  map<string, money_t> balance;
+
+  h.onMessage([&h, &state, &balance](uWS::WebSocket<uWS::CLIENT> *ws, char *msg,
+        size_t length, uWS::OpCode opCode) {
+    json rxj = json::parse(string(msg, length));
+    switch (state) {
+      case state_k::awaiting_auth_response: {
+        if (!rxj["result"])
+          die("failed to auth");
+        string txmsg = get_trading_balance().dump();
+        printf("authenticated, sending balance query... %s\n", txmsg.c_str());
+        ws->send(txmsg.c_str(), txmsg.length(), uWS::OpCode::TEXT);
+        state = state_k::awaiting_balance_response;
+        break;
+      }
+      case state_k::awaiting_balance_response: {
+        printf("rx balance\n");
+        for (auto &e : rxj) {
+          // money_t avail = num(e["available"].get<string>());
+          // if (feq(avail, 0.))
+          //   continue;
+          // balance[e["currency"]] = avail;
+          // cout << e["currency"].get<string>() << " " << avail << endl;
+        }
+        state = state_k::ready;
+        break;
+      }
+      default: die("unhandled state in onMessage");
+    }
+  });
+
+  h.onDisconnection([](uWS::WebSocket<uWS::CLIENT> *ws, int code, char *msg,
         size_t length) {
-    printf("client close (%d): <%s>\n", code, string(message, length).c_str());
+    printf("client close (%d): <%s>\n", code, string(msg, length).c_str());
   });
 
   h.listen(3000);

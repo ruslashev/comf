@@ -3,7 +3,7 @@ warnings = -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable \
 		   -Wnull-dereference -Wformat=2 -Wdisabled-optimization \
 		   -Wsuggest-override -Wlogical-op -Wtrampolines -Wfloat-equal
 flags = -ggdb3 -Og -std=c++0x -fno-rtti -I./thirdparty/cpr/include
-libraries = -lcurl -lz -luWS
+libraries = -lcurl -lz -luWS -lcrypto
 CC = gcc
 CXX = g++
 BIN = comfd
