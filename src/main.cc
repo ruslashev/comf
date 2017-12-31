@@ -35,7 +35,7 @@ void explain_error(long err) {
   }
 }
 
-json auth() {
+string auth() {
   char nonce[] = ":LWE%daF;XDweLIE135";
   unsigned char *signed_nonce = HMAC(EVP_sha256(), apisecret, strlen(apisecret),
       (unsigned char*)nonce, strlen(nonce), nullptr, nullptr);
@@ -53,16 +53,25 @@ json auth() {
       }
     }
   };
-  return j;
+  return j.dump();
 }
 
-json get_trading_balance() {
+string get_trading_balance() {
   json j = {
     { "method", "getTradingBalance" },
     { "params", {} },
     { "id", 420 }
   };
-  return j;
+  return j.dump();
+}
+
+string get_symbols() {
+  json j = {
+    { "method", "getSymbols" },
+    { "params", {} },
+    { "id", 420 }
+  };
+  return j.dump();
 }
 
 enum class state_k {
@@ -70,6 +79,7 @@ enum class state_k {
   connected,
   awaiting_auth_response,
   awaiting_balance_response,
+  awaiting_symbols_response,
   ready
 };
 const char* state_to_str(state_k state) {
@@ -97,7 +107,7 @@ void start_loop() {
     puts("connect");
     state = state_k::connected;
     if (first_time) {
-      string txmsg = auth().dump();
+      string txmsg = auth();
       printf("connected, sending auth... %s\n", txmsg.c_str());
       ws->send(txmsg.c_str(), txmsg.length(), uWS::OpCode::TEXT);
       state = state_k::awaiting_auth_response;
@@ -113,21 +123,29 @@ void start_loop() {
       case state_k::awaiting_auth_response: {
         if (!rxj["result"])
           die("failed to auth");
-        string txmsg = get_trading_balance().dump();
+        string txmsg = get_trading_balance();
         printf("authenticated, sending balance query... %s\n", txmsg.c_str());
         ws->send(txmsg.c_str(), txmsg.length(), uWS::OpCode::TEXT);
         state = state_k::awaiting_balance_response;
         break;
       }
       case state_k::awaiting_balance_response: {
-        printf("rx balance\n");
-        for (auto &e : rxj) {
-          // money_t avail = num(e["available"].get<string>());
-          // if (feq(avail, 0.))
-          //   continue;
-          // balance[e["currency"]] = avail;
-          // cout << e["currency"].get<string>() << " " << avail << endl;
+        for (auto &e : rxj["result"]) {
+          std::string availstr = e["available"];
+          if (availstr == "0")
+            continue;
+          money_t avail = num(availstr);
+          balance[e["currency"]] = avail;
+          cout << e["currency"].get<string>() << " " << avail << endl;
         }
+        string txmsg = get_symbols();
+        printf("rx balance, sending symbols query... %s\n", txmsg.c_str());
+        ws->send(txmsg.c_str(), txmsg.length(), uWS::OpCode::TEXT);
+        state = state_k::awaiting_symbols_response;
+        break;
+      }
+      case state_k::awaiting_symbols_response: {
+        cout << rxj.dump() << endl;
         state = state_k::ready;
         break;
       }
