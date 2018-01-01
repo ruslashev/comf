@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <cmath>
+#include <set>
 #include <iostream>
 #include <uWS/uWS.h>
 #include <openssl/hmac.h>
@@ -31,6 +32,7 @@ void explain_error(long err) {
     default:
       die("%d should not emit error!", (int)err);
   }
+  cout << text << endl;
 }
 
 string auth() {
@@ -108,6 +110,64 @@ const char* state_to_str(state_k state) {
   }
 }
 
+using mp = pair<money_t, money_t>;
+
+void magic(const map<string, money_t> &balance, const set<string> &currencies,
+    const map<string, pair<string, string>> &symbols,
+    const map<string, mp> &prices) {
+  if (!prices.count("BTCUSD") || !prices.count("ETHBTC")
+      || !prices.count("ETHUSD"))
+    return;
+
+  // puts("");
+  // for (auto it = prices.begin(); it != prices.end(); ++it)
+  //   cout << it->first << " = " << it->second.first << " " << it->second.first << endl;
+
+  enum type_k { UXB = 0, UXBE = 1, UXE = 2, UXEB = 3 };
+  type_k type;
+  string currency;
+  money_t max_profit = 0.;
+
+  const mp btcusd = prices.at("BTCUSD"), ethbtc = prices.at("ETHBTC"),
+        ethusd = prices.at("ETHUSD");
+  const money_t bu = btcusd.first, be = ethbtc.second, eu = ethusd.first,
+        eb = ethbtc.first;
+  for (const string &x : currencies) {
+    if (x == "USD" || x == "ETH" || x == "BTC")
+      continue;
+    if (!prices.count(x + "USD") || !prices.count(x + "ETH") ||
+        !prices.count(x + "BTC"))
+      continue;
+    const money_t ux = 1.L / prices.at(x + "USD").first,
+          xb = prices.at(x + "BTC").second,
+          xe = prices.at(x + "ETH").second;
+    if (ux * xb * bu > max_profit) {
+      max_profit = ux * xb * bu;
+      type = UXB;
+      currency = x;
+    }
+    if (ux * xb * be * eu > max_profit) {
+      max_profit = ux * xb * be * eu;
+      type = UXBE;
+      currency = x;
+    }
+    if (ux * xe * eu > max_profit) {
+      max_profit = ux * xe * eu;
+      type = UXE;
+      currency = x;
+    }
+    if (ux * xe * eb * bu > max_profit) {
+      max_profit = ux * xe * eb * bu;
+      type = UXEB;
+      currency = x;
+    }
+  }
+  cout << "max_profit=" << max_profit << endl;
+  cout << "type=" << type << endl;
+  cout << "currency=" << currency << endl;
+  cout << endl;
+}
+
 void start_loop() {
   const string url = "wss://api.hitbtc.com/api/2/ws";
   uWS::Hub h;
@@ -131,10 +191,11 @@ void start_loop() {
   });
 
   map<string, money_t> balance;
+  set<string> currencies;
   map<string, pair<string, string>> symbols;
-  map<string, pair<money_t, money_t>> prices;
+  map<string, mp> prices;
 
-  h.onMessage([&h, &state, &balance, &symbols, &prices](
+  h.onMessage([&h, &state, &balance, &symbols, &prices, &currencies](
         uWS::WebSocket<uWS::CLIENT> *ws, char *msg, size_t length,
         uWS::OpCode opCode) {
     json rxj = json::parse(string(msg, length));
@@ -166,6 +227,7 @@ void start_loop() {
       case state_k::awaiting_symbols_response: {
         printf("rx symbols, sending symbol ticker subs...\n");
         for (auto &e : rxj["result"]) {
+          currencies.insert(e["baseCurrency"].get<string>());
           symbols[e["id"]] = pair<string, string>(e["baseCurrency"],
               e["quoteCurrency"]);
           string txmsg = subscribe_symbol_ticker(e["id"]);
@@ -194,7 +256,9 @@ void start_loop() {
           money_t ask = !p["ask"].is_null() ? num(p["ask"]) : 0.,
                   bid = !p["bid"].is_null() ? num(p["bid"]) : 0.;
           prices[p["symbol"]] = { ask, bid };
-          cout << "get " << p["symbol"] << " = " << prices[p["symbol"]].first << " " << prices[p["symbol"]].second << endl;
+          // cout << "get " << p["symbol"] << " = " << prices[p["symbol"]].first
+          //   << " " << prices[p["symbol"]].second << endl;
+          magic(balance, currencies, symbols, prices);
           break;
         }
         if (rxj.count("result")) {
