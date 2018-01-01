@@ -12,8 +12,6 @@ using namespace std;
 
 #define die(...) do { printf(__VA_ARGS__); puts(""); exit(1); } while (0)
 
-// map<string, pair<string, string>> symbols;
-
 void explain_error(long err) {
   string text = "Client emitted error on ";
   switch (err) {
@@ -74,22 +72,39 @@ string get_symbols() {
   return j.dump();
 }
 
+string subscribe_symbol_ticker(const string &symbol) {
+  json j = {
+    { "method", "subscribeTicker" },
+    { "params",
+      {
+        { "symbol", symbol }
+      }
+    },
+    { "id", 420 }
+  };
+  return j.dump();
+}
+
 enum class state_k {
   unconnected,
   connected,
   awaiting_auth_response,
   awaiting_balance_response,
   awaiting_symbols_response,
+  awaiting_ticker_sub_response,
   ready
 };
+
 const char* state_to_str(state_k state) {
   switch (state) {
-    case state_k::unconnected: return "unconnected";
-    case state_k::connected: return "connected";
-    case state_k::awaiting_auth_response: return "awaiting_auth_response";
-    case state_k::awaiting_balance_response: return "awaiting_balance_response";
-    case state_k::ready: return "ready";
-    default: return "unknown state";
+    case state_k::unconnected:                  return "unconnected";
+    case state_k::connected:                    return "connected";
+    case state_k::awaiting_auth_response:       return "awaiting_auth_response";
+    case state_k::awaiting_balance_response:    return "awaiting_balance_response";
+    case state_k::awaiting_symbols_response:    return "awaiting_symbols_response";
+    case state_k::awaiting_ticker_sub_response: return "awaiting_ticker_sub_response";
+    case state_k::ready:                        return "ready";
+    default:                                    return "unknown state";
   }
 }
 
@@ -97,16 +112,17 @@ void start_loop() {
   const string url = "wss://api.hitbtc.com/api/2/ws";
   uWS::Hub h;
   state_k state = state_k::unconnected;
-  static bool first_time = true;
+  bool first_time = true;
 
   h.onError([](void *user) {
     explain_error((long)user);
   });
 
-  h.onConnection([&h, &state](uWS::WebSocket<uWS::CLIENT> *ws, uWS::HttpRequest) {
-    puts("connect");
+  h.onConnection([&h, &state, &first_time](uWS::WebSocket<uWS::CLIENT> *ws,
+        uWS::HttpRequest) {
     state = state_k::connected;
     if (first_time) {
+      first_time = false;
       string txmsg = auth();
       printf("connected, sending auth... %s\n", txmsg.c_str());
       ws->send(txmsg.c_str(), txmsg.length(), uWS::OpCode::TEXT);
@@ -115,9 +131,12 @@ void start_loop() {
   });
 
   map<string, money_t> balance;
+  map<string, pair<string, string>> symbols;
+  map<string, pair<money_t, money_t>> prices;
 
-  h.onMessage([&h, &state, &balance](uWS::WebSocket<uWS::CLIENT> *ws, char *msg,
-        size_t length, uWS::OpCode opCode) {
+  h.onMessage([&h, &state, &balance, &symbols, &prices](
+        uWS::WebSocket<uWS::CLIENT> *ws, char *msg, size_t length,
+        uWS::OpCode opCode) {
     json rxj = json::parse(string(msg, length));
     switch (state) {
       case state_k::awaiting_auth_response: {
@@ -145,8 +164,45 @@ void start_loop() {
         break;
       }
       case state_k::awaiting_symbols_response: {
-        cout << rxj.dump() << endl;
+        printf("rx symbols, sending symbol ticker subs...\n");
+        for (auto &e : rxj["result"]) {
+          symbols[e["id"]] = pair<string, string>(e["baseCurrency"],
+              e["quoteCurrency"]);
+          string txmsg = subscribe_symbol_ticker(e["id"]);
+          ws->send(txmsg.c_str(), txmsg.length(), uWS::OpCode::TEXT);
+        }
         state = state_k::ready;
+        puts("ready");
+        break;
+      }
+      case state_k::ready: {
+        int chan = rxj.count("channel"), method = rxj.count("method");
+        if (chan || method) {
+          json p;
+          if (chan) {
+            if (rxj["channel"] == "ticker")
+              p = rxj["data"];
+            else
+              die("rx unknown channel");
+          }
+          if (method) {
+            if (rxj["method"] == "ticker")
+              p = rxj["params"];
+            else
+              die("rx unknown method");
+          }
+          money_t ask = !p["ask"].is_null() ? num(p["ask"]) : 0.,
+                  bid = !p["bid"].is_null() ? num(p["bid"]) : 0.;
+          prices[p["symbol"]] = { ask, bid };
+          cout << "get " << p["symbol"] << " = " << prices[p["symbol"]].first << " " << prices[p["symbol"]].second << endl;
+          break;
+        }
+        if (rxj.count("result")) {
+          if (!rxj["result"])
+            die("request failed");
+          break;
+        }
+        cout << "rx unknown msg: " << rxj.dump() << endl;
         break;
       }
       default: die("unhandled state in onMessage");
@@ -165,7 +221,8 @@ void start_loop() {
 }
 
 int main(int argc, char **argv) {
-  cout.precision(16);
+  cout << fixed;
+  cout.precision(15);
   // load_pair_symbols();
   // balance();
   start_loop();
