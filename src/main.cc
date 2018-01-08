@@ -110,62 +110,50 @@ const char* state_to_str(state_k state) {
   }
 }
 
-using mp = pair<money_t, money_t>;
-
-void magic(const map<string, money_t> &balance, const set<string> &currencies,
-    const map<string, pair<string, string>> &symbols,
-    const map<string, mp> &prices) {
-  if (!prices.count("BTCUSD") || !prices.count("ETHBTC")
-      || !prices.count("ETHUSD"))
-    return;
-
-  // puts("");
-  // for (auto it = prices.begin(); it != prices.end(); ++it)
-  //   cout << it->first << " = " << it->second.first << " " << it->second.first << endl;
-
-  enum type_k { UXB = 0, UXBE = 1, UXE = 2, UXEB = 3 };
-  type_k type;
-  string currency;
-  money_t max_profit = 0.;
-
-  const mp btcusd = prices.at("BTCUSD"), ethbtc = prices.at("ETHBTC"),
-        ethusd = prices.at("ETHUSD");
-  const money_t bu = btcusd.first, be = ethbtc.second, eu = ethusd.first,
-        eb = ethbtc.first;
-  for (const string &x : currencies) {
-    if (x == "USD" || x == "ETH" || x == "BTC")
-      continue;
-    if (!prices.count(x + "USD") || !prices.count(x + "ETH") ||
-        !prices.count(x + "BTC"))
-      continue;
-    const money_t ux = 1.L / prices.at(x + "USD").first,
-          xb = prices.at(x + "BTC").second,
-          xe = prices.at(x + "ETH").second;
-    if (ux * xb * bu > max_profit) {
-      max_profit = ux * xb * bu;
-      type = UXB;
-      currency = x;
-    }
-    if (ux * xb * be * eu > max_profit) {
-      max_profit = ux * xb * be * eu;
-      type = UXBE;
-      currency = x;
-    }
-    if (ux * xe * eu > max_profit) {
-      max_profit = ux * xe * eu;
-      type = UXE;
-      currency = x;
-    }
-    if (ux * xe * eb * bu > max_profit) {
-      max_profit = ux * xe * eb * bu;
-      type = UXEB;
-      currency = x;
-    }
+void store_path(int s, int t, int l, const vector<vector<vector<int>>> &succ,
+    vector<int> &path) {
+  if (l == 0)
+    path.push_back(s + 1);
+  else {
+    path.push_back(s + 1);
+    store_path(succ[l][s][t], t, l - 1, succ, path);
   }
-  cout << "max_profit=" << max_profit << endl;
-  cout << "type=" << type << endl;
-  cout << "currency=" << currency << endl;
-  cout << endl;
+}
+
+void magic(const map<string, money_t> &balance, const vector<string> &currencies,
+    const vector<vector<money_t>> &exch_mtx) {
+  const int n = exch_mtx.size();
+  vector<vector<vector<money_t>>> benefit(n, vector<vector<money_t>>(n,
+        vector<money_t>(n, 0.))); // why has god abandoned us
+  vector<vector<vector<int>>> succ(n, vector<vector<int>>(n, vector<int>(n)));
+  for (int i = 0; i < n; i++)
+    for (int j = 0; j < n; j++) {
+      benefit[1][i][j] = exch_mtx[i][j];
+      if (exch_mtx[i][j] > 0.)
+        succ[1][i][j] = j;
+    }
+  money_t max_benefit = 0;
+  vector<int> path;
+  for (int l = 2; l <= n; l++) {
+    for (int i = 0; i < n; i++)
+      for (int j = 0; j < n; j++)
+        for (int k = 0; k < n; k++) {
+          if (benefit[l][i][j] < exch_mtx[i][k] * benefit[l - 1][k][j]) {
+            benefit[l][i][j] = exch_mtx[i][k] * benefit[l - 1][k][j];
+            succ[l][i][j] = k;
+            if (benefit[l][i][i] > max_benefit) {
+              max_benefit = benefit[l][i][i];
+              path.clear();
+              store_path(i, i, l, succ, path);
+            }
+          }
+        }
+  }
+  cout << "max_benefit = " << max_benefit << endl;
+  cout << "path = ";
+  for (size_t i = 0; i < path.size(); ++i)
+    cout << currencies[path[i]] << " ";
+  cout << endl << endl;
 }
 
 void start_loop() {
@@ -191,12 +179,13 @@ void start_loop() {
   });
 
   map<string, money_t> balance;
-  set<string> currencies;
   map<string, pair<string, string>> symbols;
-  map<string, mp> prices;
+  vector<string> currencies;
+  map<string, int> currency_indices;
+  vector<vector<money_t>> exch_mtx;
 
-  h.onMessage([&h, &state, &balance, &symbols, &prices, &currencies](
-        uWS::WebSocket<uWS::CLIENT> *ws, char *msg, size_t length,
+  h.onMessage([&h, &state, &balance, &symbols, &currencies, &currency_indices,
+      &exch_mtx](uWS::WebSocket<uWS::CLIENT> *ws, char *msg, size_t length,
         uWS::OpCode opCode) {
     json rxj = json::parse(string(msg, length));
     switch (state) {
@@ -226,13 +215,24 @@ void start_loop() {
       }
       case state_k::awaiting_symbols_response: {
         printf("rx symbols, sending symbol ticker subs...\n");
+        set<string> currencies_set;
         for (auto &e : rxj["result"]) {
-          currencies.insert(e["baseCurrency"].get<string>());
           symbols[e["id"]] = pair<string, string>(e["baseCurrency"],
               e["quoteCurrency"]);
+          currencies_set.insert(e["baseCurrency"].get<string>());
+          currencies_set.insert(e["quoteCurrency"].get<string>());
           string txmsg = subscribe_symbol_ticker(e["id"]);
           ws->send(txmsg.c_str(), txmsg.length(), uWS::OpCode::TEXT);
         }
+        cout << "currencies = total " << currencies_set.size() << ": { ";
+        for (auto c : currencies_set)
+          cout << c << ", ";
+        cout << "}" << endl;
+        currencies = vector<string>(currencies_set.begin(), currencies_set.end());
+        for (size_t i = 0; i < currencies.size(); ++i)
+          currency_indices[currencies[i]] = i;
+        exch_mtx = vector<vector<money_t>>(currencies.size(),
+            vector<money_t>(currencies.size(), 0.));
         state = state_k::ready;
         puts("ready");
         break;
@@ -242,23 +242,22 @@ void start_loop() {
         if (chan || method) {
           json p;
           if (chan) {
-            if (rxj["channel"] == "ticker")
-              p = rxj["data"];
-            else
+            if (rxj["channel"] != "ticker")
               die("rx unknown channel");
+            p = rxj["data"];
           }
           if (method) {
-            if (rxj["method"] == "ticker")
-              p = rxj["params"];
-            else
+            if (rxj["method"] != "ticker")
               die("rx unknown method");
+            p = rxj["params"];
           }
           money_t ask = !p["ask"].is_null() ? num(p["ask"]) : 0.,
                   bid = !p["bid"].is_null() ? num(p["bid"]) : 0.;
-          prices[p["symbol"]] = { ask, bid };
-          // cout << "get " << p["symbol"] << " = " << prices[p["symbol"]].first
-          //   << " " << prices[p["symbol"]].second << endl;
-          magic(balance, currencies, symbols, prices);
+          cout << p["symbol"] << " = " << ask << " ask " << bid << " bid" << endl;
+          const pair<string, string> s = symbols[p["symbol"]];
+          exch_mtx[currency_indices[s.first]][currency_indices[s.second]] = ask;
+          exch_mtx[currency_indices[s.second]][currency_indices[s.first]] = bid;
+          magic(balance, currencies, exch_mtx);
           break;
         }
         if (rxj.count("result")) {
@@ -287,8 +286,6 @@ void start_loop() {
 int main(int argc, char **argv) {
   cout << fixed;
   cout.precision(15);
-  // load_pair_symbols();
-  // balance();
   start_loop();
 }
 
