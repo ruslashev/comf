@@ -110,8 +110,15 @@ const char* state_to_str(state_k state) {
   }
 }
 
-void store_path(int s, int t, int l, const vector<vector<vector<int>>> &succ,
-    vector<int> &path) {
+static const int C = 250;
+static map<string, money_t> balance;
+static vector<string> currencies;
+static size_t n = 0;
+static money_t exch_mtx[C][C];
+static money_t benefit[C][C][C];
+static int succ[C][C][C];
+
+void store_path(int s, int t, int l, int succ[C][C][C], vector<int> &path) {
   if (l == 0)
     path.push_back(s + 1);
   else {
@@ -120,24 +127,26 @@ void store_path(int s, int t, int l, const vector<vector<vector<int>>> &succ,
   }
 }
 
-void magic(const map<string, money_t> &balance, const vector<string> &currencies,
-    const vector<vector<money_t>> &exch_mtx) {
-  const int n = exch_mtx.size();
-  vector<vector<vector<money_t>>> benefit(n, vector<vector<money_t>>(n,
-        vector<money_t>(n, 0.))); // why has god abandoned us
-  vector<vector<vector<int>>> succ(n, vector<vector<int>>(n, vector<int>(n)));
-  for (int i = 0; i < n; i++)
-    for (int j = 0; j < n; j++) {
+void set_to_zero(int n, money_t b[C][C]) {
+  for (int i = 0; i < n; ++i)
+    for (int j = 0; j < n; ++j)
+      b[i][j] = 0.;
+}
+
+void magic() {
+  for (size_t i = 0; i < n; ++i)
+    for (size_t j = 0; j < n; ++j) {
       benefit[1][i][j] = exch_mtx[i][j];
       if (exch_mtx[i][j] > 0.)
         succ[1][i][j] = j;
     }
-  money_t max_benefit = 0;
+  money_t max_benefit = 1;
   vector<int> path;
-  for (int l = 2; l <= n; l++) {
-    for (int i = 0; i < n; i++)
-      for (int j = 0; j < n; j++)
-        for (int k = 0; k < n; k++) {
+  for (size_t l = 2; l <= n; ++l) {
+    set_to_zero(n, benefit[l]);
+    for (size_t i = 0; i < n; ++i)
+      for (size_t j = 0; j < n; ++j)
+        for (size_t k = 0; k < n; ++k)
           if (benefit[l][i][j] < exch_mtx[i][k] * benefit[l - 1][k][j]) {
             benefit[l][i][j] = exch_mtx[i][k] * benefit[l - 1][k][j];
             succ[l][i][j] = k;
@@ -147,7 +156,6 @@ void magic(const map<string, money_t> &balance, const vector<string> &currencies
               store_path(i, i, l, succ, path);
             }
           }
-        }
   }
   cout << "max_benefit = " << max_benefit << endl;
   cout << "path = ";
@@ -178,14 +186,16 @@ void start_loop() {
     }
   });
 
-  map<string, money_t> balance;
   map<string, pair<string, string>> symbols;
-  vector<string> currencies;
   map<string, int> currency_indices;
-  vector<vector<money_t>> exch_mtx;
 
-  h.onMessage([&h, &state, &balance, &symbols, &currencies, &currency_indices,
-      &exch_mtx](uWS::WebSocket<uWS::CLIENT> *ws, char *msg, size_t length,
+  for (size_t y = 0; y < C; ++y)
+    for (size_t x = 0; x < C; ++x)
+      exch_mtx[y][x] = 0.;
+  int upd = 0;
+
+  h.onMessage([&h, &state, &symbols, &currency_indices, &upd](
+        uWS::WebSocket<uWS::CLIENT> *ws, char *msg, size_t length,
         uWS::OpCode opCode) {
     json rxj = json::parse(string(msg, length));
     switch (state) {
@@ -231,8 +241,7 @@ void start_loop() {
         currencies = vector<string>(currencies_set.begin(), currencies_set.end());
         for (size_t i = 0; i < currencies.size(); ++i)
           currency_indices[currencies[i]] = i;
-        exch_mtx = vector<vector<money_t>>(currencies.size(),
-            vector<money_t>(currencies.size(), 0.));
+        n = currencies.size();
         state = state_k::ready;
         puts("ready");
         break;
@@ -253,11 +262,12 @@ void start_loop() {
           }
           money_t ask = !p["ask"].is_null() ? num(p["ask"]) : 0.,
                   bid = !p["bid"].is_null() ? num(p["bid"]) : 0.;
-          cout << p["symbol"] << " = " << ask << " ask " << bid << " bid" << endl;
           const pair<string, string> s = symbols[p["symbol"]];
           exch_mtx[currency_indices[s.first]][currency_indices[s.second]] = ask;
           exch_mtx[currency_indices[s.second]][currency_indices[s.first]] = bid;
-          magic(balance, currencies, exch_mtx);
+          ++upd;
+          if (upd > 241)
+            magic();
           break;
         }
         if (rxj.count("result")) {
