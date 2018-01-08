@@ -118,32 +118,29 @@ static money_t exch_mtx[C][C];
 static money_t benefit[C][C][C];
 static int succ[C][C][C];
 
-void store_path(int s, int t, int l, int succ[C][C][C], vector<int> &path) {
+void store_path(int s, int t, int l, vector<int> &path) {
   if (l == 0)
     path.push_back(s + 1);
   else {
     path.push_back(s + 1);
-    store_path(succ[l][s][t], t, l - 1, succ, path);
+    store_path(succ[l][s][t], t, l - 1, path);
   }
 }
 
-void set_to_zero(int n, money_t b[C][C]) {
-  for (int i = 0; i < n; ++i)
-    for (int j = 0; j < n; ++j)
-      b[i][j] = 0.;
-}
-
 void magic() {
+  cout << "magic/0" << endl;
   for (size_t i = 0; i < n; ++i)
     for (size_t j = 0; j < n; ++j) {
       benefit[1][i][j] = exch_mtx[i][j];
-      if (exch_mtx[i][j] > 0.)
+      if (exch_mtx[i][j] > 0)
         succ[1][i][j] = j;
     }
-  money_t max_benefit = 1;
+  money_t max_benefit = 0;
   vector<int> path;
   for (size_t l = 2; l <= n; ++l) {
-    set_to_zero(n, benefit[l]);
+    for (size_t i = 0; i < n; ++i)
+      for (size_t j = 0; j < n; ++j)
+        benefit[l][i][j] = 0.;
     for (size_t i = 0; i < n; ++i)
       for (size_t j = 0; j < n; ++j)
         for (size_t k = 0; k < n; ++k)
@@ -153,7 +150,7 @@ void magic() {
             if (benefit[l][i][i] > max_benefit) {
               max_benefit = benefit[l][i][i];
               path.clear();
-              store_path(i, i, l, succ, path);
+              store_path(i, i, l, path);
             }
           }
   }
@@ -161,6 +158,16 @@ void magic() {
   cout << "path = ";
   for (size_t i = 0; i < path.size(); ++i)
     cout << currencies[path[i]] << " ";
+  cout << endl;
+
+  cout << "check: ";
+  int prev = path[0];
+  for (size_t i = 1; i < path.size(); ++i) {
+    cout << currencies[prev] << "->" << currencies[path[i]] << " = " <<
+      exch_mtx[prev][path[i]] << ", ";
+    prev = path[i];
+  }
+
   cout << endl << endl;
 }
 
@@ -234,10 +241,7 @@ void start_loop() {
           string txmsg = subscribe_symbol_ticker(e["id"]);
           ws->send(txmsg.c_str(), txmsg.length(), uWS::OpCode::TEXT);
         }
-        cout << "currencies = total " << currencies_set.size() << ": { ";
-        for (auto c : currencies_set)
-          cout << c << ", ";
-        cout << "}" << endl;
+        cout << "total currencies = " << currencies_set.size() << endl;
         currencies = vector<string>(currencies_set.begin(), currencies_set.end());
         for (size_t i = 0; i < currencies.size(); ++i)
           currency_indices[currencies[i]] = i;
@@ -260,8 +264,8 @@ void start_loop() {
               die("rx unknown method");
             p = rxj["params"];
           }
-          money_t ask = !p["ask"].is_null() ? num(p["ask"]) : 0.,
-                  bid = !p["bid"].is_null() ? num(p["bid"]) : 0.;
+          money_t ask = !p["ask"].is_null() ? num(p["ask"]) : 0,
+                  bid = !p["bid"].is_null() ? num(p["bid"]) : 0;
           const pair<string, string> s = symbols[p["symbol"]];
           exch_mtx[currency_indices[s.first]][currency_indices[s.second]] = ask;
           exch_mtx[currency_indices[s.second]][currency_indices[s.first]] = bid;
