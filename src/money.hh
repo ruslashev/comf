@@ -2,7 +2,7 @@
 
 #include <string>
 
-using money_t = float;
+using money_t = long double;
 
 money_t num(const std::string &x) {
   return std::stold(x);

@@ -2,6 +2,7 @@
 #include <cmath>
 #include <set>
 #include <iostream>
+#include <fstream>
 #include <uWS/uWS.h>
 #include <openssl/hmac.h>
 #include "../thirdparty/json.hpp"
@@ -118,6 +119,25 @@ static money_t exch_mtx[C][C];
 static money_t benefit[C][C][C];
 static int succ[C][C][C];
 
+void dump() {
+  ofstream out("fuark.csv");
+  out << fixed;
+  out.precision(15);
+
+  out << "n," << n << endl;
+  out << endl;
+
+  for (size_t i = 0; i < currencies.size(); ++i)
+    out << "," << currencies[i];
+  out << endl;
+  for (size_t y = 0; y < n; ++y) {
+    out << currencies[y] << ",";
+    for (size_t x = 0; x < n; ++x)
+      out << exch_mtx[y][x] << ",";
+    out << endl;
+  }
+}
+
 void store_path(int s, int t, int l, vector<int> &path) {
   if (l == 0)
     path.push_back(s + 1);
@@ -128,6 +148,7 @@ void store_path(int s, int t, int l, vector<int> &path) {
 }
 
 void magic() {
+  dump();
   cout << "magic/0" << endl;
   for (size_t i = 0; i < n; ++i)
     for (size_t j = 0; j < n; ++j) {
@@ -169,6 +190,7 @@ void magic() {
   }
 
   cout << endl << endl;
+  exit(0);
 }
 
 void start_loop() {
@@ -198,7 +220,7 @@ void start_loop() {
 
   for (size_t y = 0; y < C; ++y)
     for (size_t x = 0; x < C; ++x)
-      exch_mtx[y][x] = 0.;
+      exch_mtx[y][x] = 0;
   int upd = 0;
 
   h.onMessage([&h, &state, &symbols, &currency_indices, &upd](
@@ -264,8 +286,8 @@ void start_loop() {
               die("rx unknown method");
             p = rxj["params"];
           }
-          money_t ask = !p["ask"].is_null() ? num(p["ask"]) : 0,
-                  bid = !p["bid"].is_null() ? num(p["bid"]) : 0;
+          money_t ask = p["ask"].is_null() ? 0 : num(p["ask"]),
+                  bid = p["bid"].is_null() ? 0 : num(p["bid"]);
           const pair<string, string> s = symbols[p["symbol"]];
           exch_mtx[currency_indices[s.first]][currency_indices[s.second]] = ask;
           exch_mtx[currency_indices[s.second]][currency_indices[s.first]] = bid;

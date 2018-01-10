@@ -3,4 +3,5 @@ comf
 *.o
 .objs
 secretz.hh
+*.csv
 
