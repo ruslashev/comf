@@ -3,11 +3,11 @@
 #include <set>
 #include <iostream>
 #include <fstream>
+#include <deque>
 #include <uWS/uWS.h>
 #include <openssl/hmac.h>
 #include "../thirdparty/json.hpp"
 #include "secretz.hh"
-#include "money.hh"
 
 using json = nlohmann::json;
 using namespace std;
@@ -111,13 +111,19 @@ const char* state_to_str(state_k state) {
   }
 }
 
+using money_t = long double;
+
+money_t num(const std::string &x) {
+  return stold(x);
+}
+
 static const int C = 250;
 static map<string, money_t> balance;
 static vector<string> currencies;
 static size_t n = 0;
 static money_t exch_mtx[C][C];
-static money_t benefit[C][C][C];
-static int succ[C][C][C];
+static money_t profit[C][C][C];
+static int path[C][C][C];
 
 void dump() {
   ofstream out("fuark.csv");
@@ -133,63 +139,65 @@ void dump() {
   for (size_t y = 0; y < n; ++y) {
     out << currencies[y] << ",";
     for (size_t x = 0; x < n; ++x)
-      out << exch_mtx[y][x] << ",";
+      out << path[y][x] << ",";
     out << endl;
   }
 }
 
-void store_path(int s, int t, int l, vector<int> &path) {
-  if (l == 0)
-    path.push_back(s + 1);
-  else {
-    path.push_back(s + 1);
-    store_path(succ[l][s][t], t, l - 1, path);
-  }
-}
-
 void magic() {
-  dump();
-  cout << "magic/0" << endl;
-  for (size_t i = 0; i < n; ++i)
-    for (size_t j = 0; j < n; ++j) {
-      benefit[1][i][j] = exch_mtx[i][j];
-      if (exch_mtx[i][j] > 0)
-        succ[1][i][j] = j;
+  puts("finding arbitrage opportunities...");
+
+  memset(profit, 0, sizeof(profit));
+
+  size_t i, j, k, steps;
+  for (i = 0; i < n; ++i)
+    for (j = 0; j < n; ++j) {
+      profit[0][i][j] = (i == j) ? 1 : exch_mtx[i][j];
+      path[0][i][j] = i;
     }
-  money_t max_benefit = 0;
-  vector<int> path;
-  for (size_t l = 2; l <= n; ++l) {
-    for (size_t i = 0; i < n; ++i)
-      for (size_t j = 0; j < n; ++j)
-        benefit[l][i][j] = 0.;
-    for (size_t i = 0; i < n; ++i)
-      for (size_t j = 0; j < n; ++j)
-        for (size_t k = 0; k < n; ++k)
-          if (benefit[l][i][j] < exch_mtx[i][k] * benefit[l - 1][k][j]) {
-            benefit[l][i][j] = exch_mtx[i][k] * benefit[l - 1][k][j];
-            succ[l][i][j] = k;
-            if (benefit[l][i][i] > max_benefit) {
-              max_benefit = benefit[l][i][i];
-              path.clear();
-              store_path(i, i, l, path);
-            }
+
+  for (steps = 1; steps < n; ++steps)
+    for (k = 0; k < n; ++k)
+      for (i = 0; i < n; ++i)
+        for (j = 0; j < n; ++j)
+          if (profit[steps - 1][i][k] * profit[0][k][j] > profit[steps][i][j]) {
+            profit[steps][i][j] = profit[steps - 1][i][k] * profit[0][k][j];
+            path[steps][i][j] = k;
           }
-  }
-  cout << "max_benefit = " << max_benefit << endl;
-  cout << "path = ";
-  for (size_t i = 0; i < path.size(); ++i)
-    cout << currencies[path[i]] << " ";
-  cout << endl;
 
-  cout << "check: ";
-  int prev = path[0];
-  for (size_t i = 1; i < path.size(); ++i) {
-    cout << currencies[prev] << "->" << currencies[path[i]] << " = " <<
-      exch_mtx[prev][path[i]] << ", ";
-    prev = path[i];
+  size_t max_profit_currency = 0, max_profit_steps = 0;
+  money_t max_profit = profit[1][0][0];
+  for (steps = 1; steps < 20; ++steps)
+    for (i = 0; i < n; ++i)
+      if (profit[steps][i][i] > max_profit) {
+        max_profit_currency = i;
+        max_profit_steps = steps;
+        max_profit = profit[steps][i][i];
+      }
+
+  cout << "max profit currency = " << currencies[max_profit_currency] << endl;
+  cout << "max profit = " << max_profit << " in " << max_profit_steps <<
+    " steps" << endl;
+
+  deque<int> seq;
+  int current_currency = max_profit_currency;
+  seq.push_back(current_currency);
+  for (int s = max_profit_steps; s >= 0; --s) {
+    current_currency = path[s][max_profit_currency][current_currency];
+    seq.push_front(current_currency);
   }
 
-  cout << endl << endl;
+  for (i = 0; i < seq.size(); ++i)
+    cout << currencies[seq[i]] << (i == seq.size() - 1 ? "\n" : " -> ");
+
+  puts("check:");
+  int prev = 0;
+  for (i = 1; i < seq.size(); ++i) {
+    cout << currencies[seq[prev]] << " -> " << currencies[seq[i]] << " = ";
+    cout << exch_mtx[seq[prev]][seq[i]] << endl;
+    prev = i;
+  }
+
   exit(0);
 }
 
@@ -289,8 +297,8 @@ void start_loop() {
           money_t ask = p["ask"].is_null() ? 0 : num(p["ask"]),
                   bid = p["bid"].is_null() ? 0 : num(p["bid"]);
           const pair<string, string> s = symbols[p["symbol"]];
-          exch_mtx[currency_indices[s.first]][currency_indices[s.second]] = ask;
-          exch_mtx[currency_indices[s.second]][currency_indices[s.first]] = bid;
+          exch_mtx[currency_indices[s.first]][currency_indices[s.second]] = bid;
+          exch_mtx[currency_indices[s.second]][currency_indices[s.first]] = 1.0L / ask;
           ++upd;
           if (upd > 241)
             magic();
